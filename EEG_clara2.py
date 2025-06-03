@@ -48,7 +48,7 @@ RESAMPLE  = 250                       # Hz; speeds up the TFR ∼4×
 # ---------------------------------------------------------------------
 FREQS     = np.arange(1, 46)                                # 1‥45 Hz
 N_CYCLES  = np.logspace(np.log10(3), np.log10(12), len(FREQS))
-BASELINE  = (-2.0, -1.0)                                    # % change
+BASELINE  = (-1.0, 0.0)                                    # % change
 BIN_DUR   = 2.0                                             # seconds / digit
 LISTLEN_MAP = {5: 11.0, 9: 17.0, 13: 27.0}                  # tmax per load
 X_POS     = np.arange(1, 14)                                # 1‥13 for plotting
