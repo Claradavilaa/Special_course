@@ -195,7 +195,7 @@ times_09 = power_mem_09.times
 times_13 = power_mem_13.times  
 
 # Helper function: Average theta power over selected channels and frequencies
-def average_theta_power(power_obj, channels):
+def average_theta_power(power_obj, channels): # only useful when in tpr_morlet we had average True. but for our case we will want it false
     # Get indices for the frontal midline channels
     ch_indices = [power_obj.ch_names.index(ch) for ch in channels if ch in power_obj.ch_names]
     
