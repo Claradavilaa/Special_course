@@ -28,7 +28,7 @@ ROI        = ['Fz']        # electrode(s) for the theta curve
 # ---------------------------------------------------------------------
 FREQS      = np.arange(1, 46)
 N_CYCLES   = np.logspace(np.log10(3), np.log10(12), len(FREQS))
-BASELINE   = (-2., -1.)
+BASELINE   = (-1., 0)
 BIN_DUR    = 2.0
 LISTLEN_MAP = {5: 11., 9: 17., 13: 27.}
 X_POS      = np.arange(1, 14)
@@ -176,7 +176,7 @@ for subj in SUBJECTS:
                             tmin=-2., tmax=tmax, baseline=None,
                             picks='eeg', preload=True, verbose='error')
 
-            ep = mne.preprocessing.compute_current_source_density(ep, copy=True)
+            ep = mne.preprocessing.compute_current_source_density(ep, sphere='auto', lambda2 = 1e-5, stiffness=4, n_legendre_terms=50, copy=True, verbose=True)
 
             tfr = mne.time_frequency.tfr_morlet(
                 ep.pick_channels(ROI), freqs=FREQS, n_cycles=N_CYCLES,
