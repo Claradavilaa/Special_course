@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 # ---------------------------------------------------------------------
 BASE_DIR  = r"C:\Users\cdd\Documents\Uni\Special_course\ds003838-download"
 # SUBJECTS = np.arange(32, 34, 1)
-SUBJECTS   = np.setdiff1d(np.arange(32, 99), [37, 66, 94, 96])
+SUBJECTS   = np.setdiff1d(np.arange(32, 99), [37, 53, 66, 94, 96])
 #SUBJECTS   = np.setdiff1d(np.arange(32, 60), [37])
 #ROI       = ['AFz','AF3','AF4','Fz','F1','F2','F3','F4','FC3','FC1','FC2','FC4','Cz','C3','C1','C2','C4']
 ROI = ['Fz']
@@ -112,10 +112,20 @@ for subj in SUBJECTS:
                 raw, events, event_id=first_ids,
                 tmin=-2.0, tmax=tmax,
                 baseline=None, preload=True, picks='eeg', verbose='error')
+            
+            ep_csd = mne.preprocessing.compute_current_source_density(
+                ep, # Copy the epochs to avoid modifying the original data
+                sphere='auto',
+                lambda2 = 1e-5,
+                stiffness=4,
+                n_legendre_terms=50,
+                copy=True,
+                verbose=True
+            )
 
             # full 1‑45 Hz grid
             tfr = mne.time_frequency.tfr_morlet(
-                ep.pick_channels(ROI),
+                ep_csd.pick_channels(ROI),
                 freqs=FREQS, n_cycles=N_CYCLES,
                 return_itc=False, verbose='error')
             tfr.apply_baseline(BASELINE, mode='percent')
@@ -162,7 +172,7 @@ import pathlib
 from matplotlib.ticker import PercentFormatter
 
 PLOT_INDIVIDUAL = True          # set False to skip the plots
-OUT_DIR         = pathlib.Path('subject_curves_baseline_2_1')
+OUT_DIR         = pathlib.Path('subject_curves_CSD')
 OUT_DIR.mkdir(exist_ok=True)
 
 suspects = []                   # will collect subject IDs > 40 %
