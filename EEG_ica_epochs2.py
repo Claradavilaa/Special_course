@@ -19,12 +19,18 @@ BASE_DIR   = r"C:\Users\cdd\Documents\Uni\Special_course\ds003838-download"
 OUT_DIR    = r"C:\Users\cdd\Documents\Uni\Special_course\code\Special_course\EEG_amica_processed"
 OUT_DIR    = pathlib.Path(OUT_DIR)
 OUT_DIR.mkdir(exist_ok=True)
+# where the single-epoch CSVs will go  (same layout you use for the pupils)
+EPOCH_ROOT = pathlib.Path(r"C:\Users\cdd\Documents\Uni\Special_course\code\Special_course\eeg_theta_processed2")
+EPOCH_ROOT.mkdir(exist_ok=True)
 
-SUBJECTS   = np.setdiff1d(np.arange(32, 60), [37, 53])
+SUBJECTS   = np.setdiff1d(np.arange(32, 65), [37, 53])
+SUBJECTS   = np.setdiff1d(np.arange(65, 99), [66, 94, 96])
 # SUBJECTS   = np.setdiff1d(np.arange(32, 99), [37, 53, 66, 94, 96])
 RESAMPLE   = 250           # Hz  (leave None to keep original)
 THRESHOLD  = 0.30          # |corr| threshold for EOG detection
 ROI        = ['Fz']        # electrode(s) for the theta curve
+FRONTAL_MIDLINE = ['AFz','AF3','AF4','Fz','F1','F2','F3','F4','FC3','FC1','FC2','FC4','Cz','C3','C1','C2','C4']
+
 # ---------------------------------------------------------------------
 FREQS      = np.arange(1, 46)
 N_CYCLES   = np.logspace(np.log10(3), np.log10(12), len(FREQS))
@@ -40,19 +46,48 @@ logging.basicConfig(
     format='%(asctime)s  %(levelname)s: %(message)s',
 )
 
+def theta_power(tfr, beg, end, ch_name: str = "Fz"):
+    """Return mean θ-power (4-8 Hz) for one channel and a given time-window."""
+    f_sel = np.where((FREQS >= 4) & (FREQS <= 8))[0]
 
+    data = tfr.copy().crop(beg, end).data          # 3-D or 4-D
+    if data.ndim == 4:                             # (epoch, chan, freq, time)
+        data = data.mean(axis=0)                   # → (chan, freq, time)
 
-def theta_power(tfr, beg, end):
-    f_sel   = np.where((FREQS >= 4) & (FREQS <= 8))[0]
-    data    = tfr.copy().crop(beg, end).data          # 3-D or 4-D
-    if data.ndim == 4:                                # (epochs, chan, freq, time)
-        data = data.mean(axis=0)                      # → (chan, freq, time)
-    return data[:, f_sel, :].mean()                   # grand θ-power
+    ch_idx = tfr.ch_names.index(ch_name)           # Fz position
+    return data[ch_idx, f_sel, :].mean()           # scalar
+
 
 def first_digit_ids(ids, cond_prefix, list_len):
     ll = f"{list_len:02d}"
     return {c:e for c,e in ids.items()
             if c.startswith(cond_prefix) and c[2:4]=='01' and c[4:6]==ll}
+
+def save_theta_epoch(theta_map: dict[str, np.ndarray],
+                     times: np.ndarray,
+                     sub_tag: str, cond: str,
+                     load: int, counter: int):
+    """
+    theta_map : {channel → 1-D θ-power (%), shape (n_time,)}
+    times     : 1-D np.array, seconds, same length
+    """
+    out_dir = (EPOCH_ROOT / sub_tag / cond / f"{load:02d}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.DataFrame({"time": np.round(times, 3)})
+    # keep a fixed column order
+    for ch in FRONTAL_MIDLINE:
+        if ch in theta_map:
+            df[ch] = theta_map[ch]
+        else:                    # happens if a channel is absent after ICA bad-ch rejection
+            df[ch] = np.nan
+
+    with open(out_dir / f"epoch_{counter:03d}.csv", "w") as f:
+        f.write("# subject={0} condition={1} load={2} "
+                "theta=4-8 Hz sample_rate=10 Hz\n".format(sub_tag, cond, load))
+        df.to_csv(f, index=False, float_format="%.4f")
+
+
 
 # ---------------------------------------------------------------------
 # RUN SUBJECT BY SUBJECT
@@ -159,7 +194,7 @@ for subj in SUBJECTS:
                     pf.savefig(sub_out / f"{sub_tag}_ica_prop_IC{ic:02d}.png", dpi=150)
                     plt.close(pf)
             else:
-                logging.info("%s – no EOG ICs found at threshold %.2f", sub_tag, THRESHOLD)
+                logging.info("%s - no EOG ICs found at threshold %.2f", sub_tag, THRESHOLD)
 
         # ---------- apply & save cleaned data ---------------------------
         raw_clean = ica.apply(raw.copy())
@@ -171,24 +206,49 @@ for subj in SUBJECTS:
     mem_by_pos  = [[] for _ in range(13)]
     ctrl_by_pos = [[] for _ in range(13)]
 
+    epoch_counter = 0       # keep running index per subject
+
     for n_digits, tmax in LISTLEN_MAP.items():
         for prefix, bucket in [('60', mem_by_pos), ('50', ctrl_by_pos)]:
             first_ids = first_digit_ids(ids, prefix, n_digits)
-            if not first_ids: continue
+            if not first_ids:
+                continue
 
-            ep = mne.Epochs(raw_clean, events, event_id = first_ids,
+            ep = mne.Epochs(raw_clean, events, first_ids,
                             tmin=-2., tmax=tmax, baseline=None,
                             picks='eeg', preload=True, verbose='error')
-
-            ep = mne.preprocessing.compute_current_source_density(ep, sphere='auto', lambda2 = 1e-5, stiffness=4, n_legendre_terms=50, copy=True, verbose=True)
+            ep = mne.preprocessing.compute_current_source_density(
+                    ep, sphere='auto', lambda2=1e-5,
+                    stiffness=4, n_legendre_terms=50, copy=True)
 
             tfr = mne.time_frequency.tfr_morlet(
-                ep.pick_channels(ROI), freqs=FREQS, n_cycles=N_CYCLES,
-                return_itc=False, average = False, verbose='error').apply_baseline(BASELINE,'percent')
+                    ep.pick_channels(FRONTAL_MIDLINE), freqs=FREQS, n_cycles=N_CYCLES,
+                    return_itc=False, average=False, verbose='error').apply_baseline(BASELINE,'percent')
 
+            #  iterate over *epochs* first, save each one, THEN feed old code
+            sf = tfr.info['sfreq']
+            step = int(round(sf / 10))          # → 10 Hz like in pupil export
+            f_sel = np.where((FREQS >= 4) & (FREQS <= 8))[0]
+
+            for k in range(len(ep)):          # iterate over epochs
+                theta_ds_map: dict[str, np.ndarray] = {}
+                for ch_idx, ch_name in enumerate(tfr.ch_names):
+                    if ch_name not in FRONTAL_MIDLINE:
+                        continue
+                    theta_full = tfr.data[k, ch_idx, f_sel, :].mean(axis=0)   # (n_time,)
+                    theta_ds   = theta_full[::step]
+                    times_ds   = tfr.times[::step]
+                    theta_ds_map[ch_name] = theta_ds
+
+                cond = "memory" if prefix == '60' else "control"
+                save_theta_epoch(theta_ds_map, times_ds, sub_tag, cond, n_digits, epoch_counter)
+                epoch_counter += 1
+
+            # --------  summary curve (for Fig 5c) -------------------
             for pos in range(1, n_digits+1):
                 beg, end = BIN_DUR*(pos-1), BIN_DUR*pos
-                bucket[pos-1].append(theta_power(tfr, beg, end))
+                bucket[pos-1].append(theta_power(tfr, beg, end, 'Fz'))
+
 
     mem_all.append([np.nanmean(v) if v else np.nan for v in mem_by_pos])
     ctrl_all.append([np.nanmean(v) if v else np.nan for v in ctrl_by_pos])
@@ -222,7 +282,7 @@ plt.ylabel('Theta power (% change vs baseline)')
 plt.title('Replication of Kosachenko et al. 2023 — θ band (all subjects)')
 plt.xticks(X_POS); plt.ylim(bottom=0); plt.legend(frameon=False)
 plt.tight_layout()
-plt.savefig(OUT_DIR / 'theta_replication1.png', dpi=300)
+plt.savefig(OUT_DIR / 'theta_replication2.png', dpi=300)
 plt.show()
 
 print("\n✅  Done.  Everything is in", OUT_DIR)
