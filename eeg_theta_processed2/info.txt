@@ -1,0 +1,10 @@
+this has been done wirh EEG_ica_epochs2.py and the resulting figures are in 
+C:\Users\cdd\Documents\Uni\Special_course\code\Special_course\EEG_amica_processed\theta_replication2.png
+C:\Users\cdd\Documents\Uni\Special_course\EEG_good.png
+
+the figure C:\Users\cdd\Documents\Uni\Special_course\code\Special_course\EEG_amica_processed\theta_replication1.png,
+was done with a small subsample, baseline -2, -1 but with tfr parameter average = true, we want it false because
+we do not want to average, and for some reason doing that makes % of change go over 1
+
+I believe it is correct. maybe i can compare the results with eeg_theta_processed_reducedFreq, which is done with EEF_ica_epochs.ipynb
+
