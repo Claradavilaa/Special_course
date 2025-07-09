@@ -23,9 +23,7 @@ OUT_DIR.mkdir(exist_ok=True)
 EPOCH_ROOT = pathlib.Path(r"C:\Users\cdd\Documents\Uni\Special_course\code\Special_course\eeg_theta_processed2")
 EPOCH_ROOT.mkdir(exist_ok=True)
 
-SUBJECTS   = np.setdiff1d(np.arange(32, 65), [37, 53])
-SUBJECTS   = np.setdiff1d(np.arange(65, 99), [66, 94, 96])
-# SUBJECTS   = np.setdiff1d(np.arange(32, 99), [37, 53, 66, 94, 96])
+SUBJECTS   = np.setdiff1d(np.arange(32, 99), [37, 53, 66, 94, 96])
 RESAMPLE   = 250           # Hz  (leave None to keep original)
 THRESHOLD  = 0.30          # |corr| threshold for EOG detection
 ROI        = ['Fz']        # electrode(s) for the theta curve
@@ -36,7 +34,7 @@ FREQS      = np.arange(1, 46)
 N_CYCLES   = np.logspace(np.log10(3), np.log10(12), len(FREQS))
 BASELINE   = (-2., -1)
 BIN_DUR    = 2.0
-LISTLEN_MAP = {5: 11., 9: 17., 13: 27.}
+LISTLEN_MAP = {5: 11.1, 9: 19.2, 13: 27.4}
 X_POS      = np.arange(1, 14)
 # ---------------------------------------------------------------------
 logging.basicConfig(
@@ -227,7 +225,8 @@ for subj in SUBJECTS:
 
             #  iterate over *epochs* first, save each one, THEN feed old code
             sf = tfr.info['sfreq']
-            step = int(round(sf / 10))          # → 10 Hz like in pupil export
+            # step = int(round(sf / 10))          # → 10 Hz like in pupil export
+            step = 1
             f_sel = np.where((FREQS >= 4) & (FREQS <= 8))[0]
 
             for k in range(len(ep)):          # iterate over epochs

@@ -22,11 +22,10 @@
 # └── trial_skip_log.tsv                      # each skipped trial with reason
 # 
 # *   **No averaging** is performed – every trial is stored on its own.
-# *   Each CSV contains a single column `diameter_z` (10 Hz, in seconds from −2 s).
+# *   Each CSV contains a single column `diameter` (10 Hz, in seconds from −2 s).
 #     Additional metadata are written as header comments for convenience.
 # *   Subjects with < 6 valid trials are skipped (same rule as in the original script).
 # 
-# Run the script once; it will take ~10 min for the full dataset (≈ 60 subjects).
 
 # %%
 from __future__ import annotations
@@ -141,13 +140,13 @@ def preprocess_epoch(epoch: pd.DataFrame) -> pd.Series | None:
     baseline = epoch.loc[epoch.index < epoch.index[0] + pd.Timedelta(seconds=2), "diameter"].mean()
     epoch["diameter"] = epoch["diameter"] - baseline
 
-    # 6) resample to 10 Hz (100 ms) and z‑score **per trial**
-    epoch = epoch.resample("100ms").mean()
+    # 6) resample to 100 Hz (10 ms) and z‑score **per trial**
+    epoch = epoch.resample("10ms").mean()
     epoch["diameter"] = epoch["diameter"].ffill().bfill()
     #epoch["diameter_z"] = (epoch["diameter"] - epoch["diameter"].mean()) / epoch["diameter"].std(ddof=0)
 
     # 8) replace index with numeric time vector (s,  –2 … +len)
-    epoch["time"] = ((epoch.index - epoch.index[0]).total_seconds() - 2).round(1)
+    epoch["time"] = ((epoch.index - epoch.index[0]).total_seconds() - 2).round(2)
     epoch = epoch.set_index("time")
 
     return epoch["diameter"]
@@ -218,8 +217,8 @@ def process_subject(sub_id: int):
         for idx, ep in enumerate(epochs):
             out_file = target_dir / f"epoch_{idx:03d}.csv"
             header_comment = (
-                f"# subject={sub_tag} condition={cond} load={load} sample_rate=10Hz\n"
-                f"# columns: time(s), diameter_z\n"
+                f"# subject={sub_tag} condition={cond} load={load} sample_rate=100Hz\n"
+                f"# columns: time(s), diameter\n"
             )
             ep.to_csv(out_file, header=False, index=True, float_format="%.6f", date_format="%.1f")
             # prepend metadata comment
