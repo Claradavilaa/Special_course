@@ -82,7 +82,7 @@ def save_theta_epoch(theta_map: dict[str, np.ndarray],
 
     with open(out_dir / f"epoch_{counter:03d}.csv", "w") as f:
         f.write("# subject={0} condition={1} load={2} "
-                "theta=4-8 Hz sample_rate=10 Hz\n".format(sub_tag, cond, load))
+                "theta=4-8 Hz sample_rate=250 Hz\n".format(sub_tag, cond, load))
         df.to_csv(f, index=False, float_format="%.4f")
 
 
