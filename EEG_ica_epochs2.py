@@ -1,5 +1,5 @@
 """
-batch_amica_theta.py  –  full AMICA → Fig 5c workflow for all subjects
+batch_amica_theta.py  -  full AMICA → Fig 5c workflow for all subjects
 ---------------------------------------------------------------------
 
 * Saves every diagnostic (correlation table, ICA plots, 1-channel noise log)
@@ -100,17 +100,17 @@ for subj in SUBJECTS:
     clean_fif = sub_out / f"{sub_tag}_task-memory_eeg_amica.fif"
 
     if not raw_set.exists():
-        logging.warning("%s – missing EEGLAB file, skipped", sub_tag)
+        logging.warning("%s - missing EEGLAB file, skipped", sub_tag)
         continue
 
     print(f"▶  {sub_tag}")
     if clean_fif.exists():
-        print(f"   {sub_tag} – already processed, skipping ICA")
-        logging.info("%s – already ICA, skipped ICA part", sub_tag)
+        print(f"   {sub_tag} - already processed, skipping ICA")
+        logging.info("%s - already ICA, skipped ICA part", sub_tag)
         raw_clean = mne.io.read_raw_fif(clean_fif, preload=True, verbose='error')
 
     else:
-        logging.info("%s – processing ICA", sub_tag)
+        logging.info("%s - processing ICA", sub_tag)
         # ------------------------------------------------ ICA / CLEAN STEP
         raw = mne.io.read_raw_eeglab(raw_set, preload=True, verbose='error')
         raw.filter(1., 45., fir_design='firwin', verbose='error')
@@ -199,7 +199,7 @@ for subj in SUBJECTS:
         raw_clean.save(clean_fif, overwrite=True)
 
     # ------------------------------------------------ TFR / FIG 5c STEP
-    logging.info("%s – processing TFR", sub_tag)
+    logging.info("%s - processing TFR", sub_tag)
     events, ids = mne.events_from_annotations(raw_clean)
     mem_by_pos  = [[] for _ in range(13)]
     ctrl_by_pos = [[] for _ in range(13)]
