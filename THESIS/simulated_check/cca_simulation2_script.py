@@ -149,22 +149,25 @@ def plot_X_components(trial, fs, ch_idx=(0,1,2,3), ch_names=None, title_prefix="
 
     ch_idx = list(ch_idx)
     n = len(ch_idx)
-    plt.figure(figsize=(11, 2.5*n))
+    plt.figure(figsize=(12, 5))
 
     for i, c in enumerate(ch_idx, start=1):
         name = ch_names[c] if (ch_names is not None and c < len(ch_names)) else f"ch{c}"
-        ax1 = plt.subplot(n, 2, 2*i-1)
-        ax1.plot(t, X[:, c], label=f'{name} raw')
-        ax1.plot(t, X_slow[:, c], label=f'{name} slow (LP)')
-        ax1.set_ylabel('Amp')
-        if i == 1: ax1.set_title(f"{title_prefix} — EEG raw vs. slow")
-        ax1.legend(loc='best')
+        ax1 = plt.subplot(2, n, i)
+        ax1.plot(t, X[:, c], label=f'raw')
+        ax1.plot(t, X_slow[:, c], label=f'slow')
+        if i == 1: 
+            ax1.legend(loc='lower center')
+            ax1.set_ylabel('Raw and tonic (LP)')
+        ax1.set_title(rf"{title_prefix} — {name}")
+        
 
-        ax2 = plt.subplot(n, 2, 2*i)
-        ax2.plot(t, X_fast[:, c], label=f'{name} fast (band)')
+        ax2 = plt.subplot(2, n, n+i)
+        ax2.plot(t, X_fast[:, c], label=f'fast')
+        if i == 1: 
+            ax2.legend(loc='lower center')
+            ax2.set_ylabel('phasic (band)')
         if i == n: ax2.set_xlabel('Time (s)')
-        if i == 1: ax2.set_title(f"{title_prefix} — EEG fast (band)")
-        ax2.legend(loc='best')
 
     plt.tight_layout()
     plt.show()
@@ -196,31 +199,39 @@ def plot_y_vs_proj_components(
     # use precomputed filtered matrices if available
     if ('X_slow' not in trial) or ('X_fast' not in trial):
         raise ValueError("X_slow/X_fast not found in trial; set use_project_then_filter=True or compute them first.")
+    proj_gt = X @ w
     proj_slow = np.asarray(trial['X_slow']) @ w
     proj_fast = np.asarray(trial['X_fast']) @ w
 
     # --- Plot
-    fig = plt.figure(figsize=(10, 6))
-    ax1 = plt.subplot(2,1,1)
-    ax1.plot(t, y_slow, label='y_slow (LP)')
-    ax1.plot(t, proj_slow, label='proj_slow (X_slow@w)')
+    fig = plt.figure(figsize=(12, 3))
+    ax0 = plt.subplot(1,3,1)
     if 'c' in trial:
-        ax1.plot(t, trial['c'], label='ground-truth c', alpha=0.6)
-    ax1.plot(t, y, label='y (raw)', alpha=0.6)
-    ax1.set_title(f"{title_prefix} — Slow components")
-    ax1.set_ylabel('Amplitude')
+        ax0.plot(t, trial['c'], label=r'$c_1$', color='green')
+    ax0.plot(t, y, label=r'$y_1$', alpha=0.6)
+    ax0.plot(t, proj_gt, label=r'$(X_{1} \cdot \omega_{gt})$', alpha=0.6)
+    ax0.set_xlabel('Time (s)')
+    ax0.set_title(f"{title_prefix} — Original")
+    ax0.legend(loc='best')
+
+    ax1 = plt.subplot(1,3,2)
+    ax1.plot(t, y_slow, label=r'$y_{1}$')
+    ax1.plot(t, proj_slow, label=r'$(X_{1} \cdot \omega_{gt})$')
+    ax1.set_xlabel('Time (s)')
+    ax1.set_title(f"{title_prefix} — Tonic")
     ax1.legend(loc='best')
 
-    ax2 = plt.subplot(2,1,2)
-    ax2.plot(t, y_fast, label='y_fast (band)')
-    ax2.plot(t, proj_fast, label='proj_fast (X_fast@w)')
-    ax2.set_title(f"{title_prefix} — Fast components")
+    ax2 = plt.subplot(1,3,3)
+    ax2.plot(t, y_fast, label=r'$y_{1}$')
+    ax2.plot(t, proj_fast, label=r'$(X_{1} \cdot \omega_{gt})$')
+    ax2.set_title(f"{title_prefix} — Phasic")
     ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Amplitude')
+    ax2.set_xlabel('Time (s)')
     ax2.legend(loc='best')
 
     plt.tight_layout()
     plt.show()
+
 
 
 
@@ -400,15 +411,22 @@ def simulate_component_dataset_old(
 
 def simulate_component_dataset(
     n_triplets: int = 4,
-    triplet_lengths_s: tuple[float, float, float] = (26.0, 18.0, 5.0),
-    pupil_lag_ms: int = 350,
+    triplet_lengths_s: tuple[float, float, float] = (26.0, 18.0, 10.0),
+    pupil_lag_ms: int = 0,
     w_spread: float = 0.5,
-    eeg_noise_sd: float = 0.15,
-    eeg_crosstalk: float = 0.10,
-    pupil_noise_sd: float = 0.10,
+    eeg_noise_sd: float = 0,
+    eeg_crosstalk: float = 0,
+    pupil_noise_sd: float = 0,
     w_true_fixed: np.ndarray = None,
     shuffle_within_triplet: bool = False,
-    rng: np.random.Generator = None,   # NEW
+    rng: np.random.Generator = None,
+
+    pupil_extra: str = None,          # None | 'ar1' | 'pink' | 'walk'
+    pupil_extra_scale: float = 0.0,          # amplitude for extra slow driver
+    lag_jitter_ms: int = 0,                  # per-trial ± jitter around pupil_lag_ms
+    eeg_weight_drift: bool = False,          # allow slow drift in EEG mixing
+    eeg_weight_drift_sd: float = 0.15,       # drift magnitude (scalar AR1)
+    pupil_nonlinear: bool = False,           # tanh nonlinearity on pupil path
 ):
     """
     Returns trials grouped in triplets. Each triplet contains exactly one trial
@@ -431,7 +449,13 @@ def simulate_component_dataset(
         for L in lengths:
             c = make_gt_component(L, FS, kind="tasky")
             T = len(c)
-            X = np.outer(c, w_true)
+
+            # EEG: outer(c, w) or time-varying w(t)
+            if eeg_weight_drift:
+                w_t = time_varying_weights(w_true, T, drift_sd=eeg_weight_drift_sd, rng=rng)  # (T,C)
+                X = c[:, None] * w_t
+            else:
+                X = np.outer(c, w_true)
 
             if eeg_crosstalk > 0:
                 leak = eeg_crosstalk * (X.mean(axis=1, keepdims=True) - X)
@@ -442,12 +466,25 @@ def simulate_component_dataset(
                 sigma_c = eeg_noise_sd * (1 + 0.3 * rng.normal(size=C))
                 X = X + rng.normal(size=X.shape) * sigma_c
 
-            y = shift_signal(c, FS, pupil_lag_ms)
+            # ---- pupil path with optional lag jitter
+            if lag_jitter_ms:
+                y_base, _ = jittered_shift(c, FS, base_lag_ms=pupil_lag_ms, jitter_ms=lag_jitter_ms, rng=rng)
+            else:
+                y_base = shift_signal(c, FS, pupil_lag_ms)
+
+            # add extra slow driver (independent)
+            if pupil_extra in ('ar1','pink','walk'):
+                d = independent_slow_driver(T, kind=pupil_extra, rng=rng)
+                y_base = y_base + pupil_extra_scale * d
+
+            if pupil_nonlinear:
+                y_base = sat_nonlinearity(y_base, k=1.2)
+
             if pupil_noise_sd != 0:
-                y = y + pupil_noise_sd * rng.normal(size=T)
+                y_base = y_base + pupil_noise_sd * rng.normal(size=T)
 
             trials.append({
-                'X': X, 'y': y, 'c': c, 'w_true': w_true,
+                'X': X, 'y': y_base, 'c': c, 'w_true': w_true,
                 'triplet_id': triplet_id, 'length_s': float(L)
             })
 
