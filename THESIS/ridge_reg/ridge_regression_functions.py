@@ -482,6 +482,29 @@ def loto_folds_from_triplets(triplets: List[List[TrialTuple]]):
         })
     return folds
 
+def normalise_w_cov(X, w, eps=1e-12):
+    """
+    Normalize weights so that w^T Sxx w = 1, where
+    Sxx is the covariance of X (T x C).
+
+    Returns a rescaled copy of w.
+    """
+    X = np.asarray(X, float)
+    w = np.asarray(w, float).ravel()
+
+    n = X.shape[0]
+
+
+    Sxx = (X.T @ X) / max(n - 1, 1)   # covariance (ddof=1)
+    quad = float(w.T @ Sxx @ w)
+    if quad <= eps:
+        # degenerate case: don't rescale
+        raise ValueError("Cannot normalise weights: quadratic form too small.")  
+
+    scale = 1.0 / np.sqrt(quad)
+    return w * scale
+
+
 def ridge_wx(X: np.ndarray, y: np.ndarray, lam: float, eps: float = 1e-12, normalise: bool = False ) -> np.ndarray:
     """
     Return ridge-regression weights w for y ≈ Xw.
@@ -500,6 +523,9 @@ def ridge_wx(X: np.ndarray, y: np.ndarray, lam: float, eps: float = 1e-12, norma
     A = Sxx + lam * np.eye(Sxx.shape[0])
     w = np.linalg.solve(A, Sxy)
 
+    if normalise:
+        w = normalise_w_cov(X, w)
+        w = w[:, None]
     return w
     
 
@@ -526,7 +552,7 @@ def mse_with_weights(X: np.ndarray, y: np.ndarray, w: np.ndarray) -> float:
 
 
 # ---------------- per-(lag, λ) training step ---------------------------------
-def fit_at_shift_lambda(trials: List[dict], shift_samples: int, lam: float, trim_ms: int) -> Tuple[np.ndarray, float]:
+def fit_at_shift_lambda(trials: List[dict], shift_samples: int, lam: float, trim_ms: int, normalise: bool = False) -> Tuple[np.ndarray, float]:
     """
     Fit weights on concatenated TRAIN trials aligned with the given shift.
     Returns (w, train_mse, r_train).
@@ -537,7 +563,7 @@ def fit_at_shift_lambda(trials: List[dict], shift_samples: int, lam: float, trim
         return np.zeros(trials[0]['X'].shape[1]), np.nan
     #w_zoo = ridge_cca_wx_zoo(X_tr, y_tr, lam)
 
-    w_ridge = ridge_wx(X_tr, y_tr, lam, normalise=False)
+    w_ridge = ridge_wx(X_tr, y_tr, lam, normalise=normalise)
     train_mse = mse_with_weights(X_tr, y_tr, w_ridge)
 
     r_train = corr_with_weights(X_tr, y_tr, w_ridge)
@@ -562,7 +588,7 @@ def lag_corr_curve(trials, lam, shifts, trim_ms):
     return np.array(shifts) * 10, np.array(rs)   # convert to ms
 
 
-def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory: List[dict], subj: int, trim_ms: int, shifts: np.ndarray):
+def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory: List[dict], subj: int, trim_ms: int, shifts: np.ndarray, normalise_w: bool = False):
     cv_summaries = []
     
     for lam in lambdas:
@@ -579,7 +605,7 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
             # 1) search best lag on TRAIN for this λ (MAXIMISE train correlation)
             best_shift, best_train_mse, rs_best, best_w = None, np.inf, -np.inf, None
             for s in shifts:
-                w_s, mse_tr, rs_tr = fit_at_shift_lambda(train_trials, int(s), lam, trim_ms)
+                w_s, mse_tr, rs_tr = fit_at_shift_lambda(train_trials, int(s), lam, trim_ms, normalise=normalise_w)
                 
                 if np.isfinite(rs_tr) and rs_tr > rs_best:
                     best_train_mse, best_shift, rs_best, best_w = mse_tr, int(s), rs_tr, w_s
@@ -621,12 +647,17 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
 
 
     # ------- recompute DEFINITIVE lag + weights at the chosen λ on ALL trials
+    rs_shifts, mse_shifts = [], []
     best_shift_all, best_mse_all, best_rs_all, best_w_all = None, np.inf, -np.inf, None
     for s in shifts:
-        w_s, mse_all, rs_all = fit_at_shift_lambda(trials_memory, int(s), best["lam"], trim_ms)
+        w_s, mse_all, rs_all = fit_at_shift_lambda(trials_memory, int(s), best["lam"], trim_ms, normalise=normalise_w)
+        rs_shifts.append(rs_all)
+        mse_shifts.append(mse_all)
 
         if np.isfinite(rs_all) and rs_all > best_rs_all:
             best_mse_all, best_shift_all, best_rs_all, best_w_all = mse_all, int(s), rs_all, w_s
+
+    
 
     final_fit = {
         "lambda": best["lam"],
@@ -639,5 +670,8 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
         "cv_mean_train_mse": best["mean_train_mse"],
         "cv_mean_train_r": best["mean_train_r"],
         "cv_details": best["per_fold"],
+        "shifts": [int(s) for s in shifts],
+        "rs_shifts": rs_shifts,
+        "mse_shifts": mse_shifts,
     }
     return final_fit, ordered_results
