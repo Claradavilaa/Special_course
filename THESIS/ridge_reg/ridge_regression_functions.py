@@ -675,3 +675,170 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
         "mse_shifts": mse_shifts,
     }
     return final_fit, ordered_results
+
+def fit_best_shift_on_train(train_trials, lam, shifts, trim_ms, normalise_w=False):
+    """
+    For fixed lambda: choose lag ONLY using training data (parameter estimation).
+    Criterion: maximise training correlation (same as speech).
+    """
+    best_shift, best_w = None, None
+    best_r = -np.inf
+    best_mse = np.inf
+
+    for s in shifts:
+        w_s, mse_tr, r_tr = fit_at_shift_lambda(train_trials, int(s), float(lam), trim_ms, normalise=normalise_w)
+        if np.isfinite(r_tr) and r_tr > best_r:
+            best_r = r_tr
+            best_mse = mse_tr
+            best_shift = int(s)
+            best_w = w_s
+
+    return best_shift, best_w, best_mse, best_r
+
+def eelbrain_partitions_indices(n_cases: int, k: int):
+    """Round-robin partitions: part i contains indices i, i+k, i+2k, ..."""
+    k = int(min(k, n_cases))
+    return [list(range(i, n_cases, k)) for i in range(k)]
+
+
+def make_rr_partitions_folds(trials, k: int):
+    """Round-robin partitions like eelbrain_partitions_indices, returned as folds=[{train,test}, ...]."""
+    n = len(trials)
+    parts = eelbrain_partitions_indices(n, k)
+    folds = []
+    for j in range(len(parts)):
+        test_idx = parts[j]
+        train_idx = [i for pj in range(len(parts)) if pj != j for i in parts[pj]]
+        folds.append({
+            "train": [trials[i] for i in train_idx],
+            "test":  [trials[i] for i in test_idx],
+            "fold":  j,
+            "test_idx": test_idx,
+        })
+    return folds
+
+def choose_load_like_eelbrain(trials_memory):
+    """Replicate my_eelbrain_c.py load-selection logic."""
+    load_05, load_09, load_13 = split_trials_by_load(trials_memory)
+    n5, n9, n13 = len(load_05), len(load_09), len(load_13)
+
+    chosen_load = 13
+    chosen_trials = list(load_13)
+
+    if n13 == 0:
+        candidates = [(5, n5, list(load_05)), (9, n9, list(load_09))]
+        candidates = [(l, n, tr) for (l, n, tr) in candidates if n > 0]
+        if not candidates:
+            return None, []
+        chosen_load, _, chosen_trials = max(candidates, key=lambda t: t[1])
+    else:
+        if n9 > 0 and n9 >= 1.33 * n13:
+            chosen_load, chosen_trials = 9, list(load_09)
+        elif n5 > 0 and n5 >= 2.0 * n13:
+            chosen_load, chosen_trials = 5, list(load_05)
+
+    return chosen_load, chosen_trials
+
+def nested_cv_lambda_digit(
+    trials, lambdas, shifts, trim_ms,
+    outer_partitions=4, inner_partitions=3,
+    normalise_w=False
+):
+    # Outer folds (K_out = 4)
+    outer_folds = make_rr_partitions_folds(trials, k=outer_partitions)
+
+    outer_rows = []
+    y_test_all = []
+    yhat_test_all = []
+
+    for o_idx, ofold in enumerate(outer_folds):
+        outer_train = ofold["train"]
+        outer_test  = ofold["test"]
+
+        # ---------------- Inner CV on OUTER TRAIN: pick lambda ----------------
+        # Inner folds are built ONLY from outer_train (K_in = 3 => 2 train + 1 val)
+        inner_folds = make_rr_partitions_folds(outer_train, k=inner_partitions)
+
+        inner_summ = []
+        for lam in lambdas:
+            val_mses = []
+            val_rs   = []
+
+            for ifold in inner_folds:
+                inner_train = ifold["train"]
+                inner_val   = ifold["test"]
+
+                # (parameter estimation) choose lag+weights on inner_train only
+                best_shift, best_w, train_mse, train_r = fit_best_shift_on_train(
+                    inner_train, lam, shifts, trim_ms, normalise_w=normalise_w
+                )
+
+                # score on validation
+                X_val, y_val = concat_trials(inner_val, shift=best_shift, trim=trim_ms)
+                if len(y_val) == 0:
+                    mse_val, r_val = np.nan, np.nan
+                else:
+                    yhat_val = X_val @ best_w
+                    mse_val  = float(np.mean((yhat_val - y_val) ** 2))
+                    r_val    = float(pearsonr(np.asarray(yhat_val).ravel(), np.asarray(y_val).ravel())[0])
+
+                val_mses.append(mse_val)
+                val_rs.append(r_val)
+
+            inner_summ.append({
+                "lam": float(lam),
+                "mean_val_mse": float(np.nanmean(val_mses)),
+                "mean_val_r":   float(np.nanmean(val_rs)),
+            })
+
+        # choose lambda by lowest mean validation MSE (tie-break: smaller lambda)
+        lam_star = sorted(inner_summ, key=lambda d: (d["mean_val_mse"], d["lam"]))[0]["lam"]
+
+        # ---------------- Refit on FULL outer_train with lam_star ----------------
+        best_shift, best_w, train_mse, train_r = fit_best_shift_on_train(
+            outer_train, lam_star, shifts, trim_ms, normalise_w=normalise_w
+        )
+
+        # ---------------- Predict on outer_test; store for recombined metric ----------------
+        X_te, y_te = concat_trials(outer_test, shift=best_shift, trim=trim_ms)
+        if len(y_te) == 0:
+            test_mse, test_r = np.nan, np.nan
+        else:
+            yhat_te = X_te @ best_w
+            test_mse = float(np.mean((yhat_te - y_te) ** 2))
+            test_r   = float(pearsonr(np.asarray(yhat_te).ravel(), np.asarray(y_te).ravel())[0])
+
+            y_test_all.append(y_te)
+            yhat_test_all.append(yhat_te)
+
+        outer_rows.append({
+            "outer_fold": int(o_idx),
+            "lam_star": float(lam_star),
+            "best_shift": int(best_shift),
+            "train_mse": float(train_mse),
+            "train_r": float(train_r),
+            "test_mse_fold": float(test_mse),
+            "test_r_fold": float(test_r),
+        })
+
+    # ---------------- Recombined OUTER-test metric (dec.r analogue) ----------------
+    if len(y_test_all) == 0:
+        test_mse_recombined, test_r_recombined = np.nan, np.nan
+    else:
+        y_all    = np.vstack(y_test_all)
+        yhat_all = np.vstack(yhat_test_all)
+
+        test_mse_recombined = float(np.mean((yhat_all - y_all) ** 2))
+        test_r_recombined   = float(pearsonr(np.asarray(yhat_all).ravel(), np.asarray(y_all).ravel())[0])
+
+    fold_mean_r   = float(np.nanmean([r["test_r_fold"] for r in outer_rows]))
+    fold_mean_mse = float(np.nanmean([r["test_mse_fold"] for r in outer_rows]))
+
+    return {
+        "outer_details": outer_rows,
+        "test_r_recombined": test_r_recombined,     # <-- compare this to dec.r
+        "test_mse_recombined": test_mse_recombined,
+        "test_r_fold_mean": fold_mean_r,
+        "test_mse_fold_mean": fold_mean_mse,
+    }
+
