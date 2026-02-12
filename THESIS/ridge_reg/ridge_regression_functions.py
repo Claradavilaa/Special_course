@@ -588,14 +588,16 @@ def lag_corr_curve(trials, lam, shifts, trim_ms):
     return np.array(shifts) * 10, np.array(rs)   # convert to ms
 
 
-def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory: List[dict], subj: int, trim_ms: int, shifts: np.ndarray, normalise_w: bool = False):
+def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory: List[dict], subj: int, trim_ms: int, shifts: np.ndarray, normalise_w: bool = False, keep_trial_predictions=True):
     cv_summaries = []
-    
+    preds_by_lam = {}
+
     for lam in lambdas:
         print(f"  Lambda {lam}...")
         fold_rows = []
         train_rss, test_rss = [], []
         train_mses, test_mses = [], []
+        lam_preds = []
 
         for fold_idx, fold in enumerate(folds):
             print(f"  Fold {fold_idx+1}/{len(folds)}...")
@@ -612,6 +614,13 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
                 
             # 2) evaluate on TEST using best (lag, w)
             mse_te, rs_te = evaluate_on_trials(test_trials, best_shift, best_w, trim_ms)
+            # 2.1: store per-trial predictions for this fold
+            if keep_trial_predictions:
+                lam_preds.extend(
+                    predict_trials_individual(
+                        test_trials, best_shift, best_w, trim_ms, lam=lam, fold_idx=fold_idx
+                    )
+                )
 
             fold_rows.append({
                 "lam": lam, "shift": best_shift,
@@ -622,27 +631,44 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
             train_rss.append(rs_best);  test_rss.append(rs_te)
             train_mses.append(best_train_mse); test_mses.append(mse_te)
 
+        if keep_trial_predictions and lam_preds:
+            y_all    = np.concatenate([np.asarray(d["y"]).ravel() for d in lam_preds])
+            yhat_all = np.concatenate([np.asarray(d["yhat"]).ravel() for d in lam_preds])
+            test_mse_recombined = float(np.mean((yhat_all - y_all) ** 2))
+            test_r_recombined   = float(pearsonr(yhat_all, y_all)[0])
+        else:
+            test_mse_recombined, test_r_recombined = np.nan, np.nan
+
         cv_summaries.append({
             "lam": lam,
             "mean_train_r": float(np.nanmean(train_rss)),
             "mean_test_r": float(np.nanmean(test_rss)),
+            "test_r_recombined": test_r_recombined,
+            "test_mse_recombined": test_mse_recombined,
             "mean_train_mse": float(np.nanmean(train_mses)),
             "mean_test_mse": float(np.nanmean(test_mses)),
             "per_fold": fold_rows,
         })
+
+        if keep_trial_predictions:
+            lam_key = f"{float(lam):.12g}"
+            preds_by_lam[lam_key] = lam_preds
 
     print("\n[Subject", subj, "] CV summary by lambda:")
     for cs in cv_summaries:
         print(f"  λ={cs['lam']:>6} | "
             f"train_r={cs['mean_train_r']:+.3f} | "
             f"test_r={cs['mean_test_r']:+.3f} | "
+            f"test_r_rec={cs['test_r_recombined']:+.3f} | "
             f"train_mse={cs['mean_train_mse']:.4f} | "
-            f"test_mse={cs['mean_test_mse']:.4f}")
+            f"test_mse={cs['mean_test_mse']:.4f} | "
+            f"test_mse_rec={cs['test_mse_recombined']:+.4f}")
 
 
     # pick λ with LOWEST mean TEST MSE (tie-breaker: smaller λ)
     ordered_results = sorted(cv_summaries, key=lambda c: (c["mean_test_mse"], c["lam"]))
     best = ordered_results[0]
+    lam_star = float(best["lam"])
     print(f"\n[Subject {subj}] Best λ = {best['lam']}, mean_test_mse = {best['mean_test_mse']:.4f}, mean_test_r = {best['mean_test_r']:+.3f}")
 
 
@@ -669,11 +695,17 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
         "cv_mean_test_r": best["mean_test_r"],
         "cv_mean_train_mse": best["mean_train_mse"],
         "cv_mean_train_r": best["mean_train_r"],
+        "cv_test_r_recombined": best["test_r_recombined"],
+        "cv_test_mse_recombined":best["test_mse_recombined"],
         "cv_details": best["per_fold"],
         "shifts": [int(s) for s in shifts],
         "rs_shifts": rs_shifts,
         "mse_shifts": mse_shifts,
     }
+
+    lam_star_key = f"{float(lam_star):.12g}"
+    final_fit["cv_trial_predictions"] = preds_by_lam.get(lam_star_key, [])
+    
     return final_fit, ordered_results
 
 def fit_best_shift_on_train(train_trials, lam, shifts, trim_ms, normalise_w=False):
@@ -694,6 +726,110 @@ def fit_best_shift_on_train(train_trials, lam, shifts, trim_ms, normalise_w=Fals
             best_w = w_s
 
     return best_shift, best_w, best_mse, best_r
+
+
+##### TO ALSO STORE THE PREDICTIONS FOR PLOTTING ########
+
+def align_one_trial(eeg, pupil, shift, trim_ms):
+    """
+    Align ONE trial exactly like concat_trials():
+    window -> lag-trim -> optional extra trim -> per-trial normalisation.
+    Returns X (T_eff, K), y (T_eff, 1), and an info dict.
+    """
+    if eeg.ndim == 1:
+        eeg = eeg[:, None]
+    if pupil.ndim == 1:
+        pupil = pupil[:, None]
+
+    T = min(len(eeg), len(pupil))
+    start = WIN_OFFSET1
+    stop  = T - WIN_OFFSET2
+    if stop <= start:
+        return None
+
+    eeg_w   = eeg[start:stop]
+    pupil_w = pupil[start:stop]
+    Tw = len(eeg_w)
+    if Tw == 0:
+        return None
+
+    # lag trim (no wrap)
+    if shift >= 0:
+        if Tw <= shift:
+            return None
+        eeg_seg   = eeg_w[shift:]
+        pupil_seg = pupil_w[:Tw - shift]
+    else:
+        s = -shift
+        if Tw <= s:
+            return None
+        eeg_seg   = eeg_w[:Tw - s]
+        pupil_seg = pupil_w[s:]
+
+    # same "extra_samp" logic as concat_trials
+    if trim_ms is not None:
+        target_trim_samp = trim_ms // 10
+        extra_samp = max(0, (target_trim_samp - abs(shift)) // 2)
+
+        if extra_samp > 0:
+            Lcur = len(eeg_seg)
+            extra_eff = int(min(extra_samp, max(0, (Lcur - 2) // 2)))
+            if extra_eff > 0:
+                eeg_seg   = eeg_seg[extra_eff : Lcur - extra_eff]
+                pupil_seg = pupil_seg[extra_eff : Lcur - extra_eff]
+
+    # per-trial normalisation (same as concat_trials)
+    eeg_seg   = normalise_eeg(eeg_seg)
+    pupil_seg = (pupil_seg - pupil_seg.mean()) / pupil_seg.std(ddof=0)
+
+    info = {
+        "start": int(start),
+        "stop": int(stop),
+        "shift": int(shift),
+        "len_aligned": int(len(pupil_seg)),
+    }
+    return eeg_seg, pupil_seg, info
+
+def predict_trials_individual(test_trials, shift, w, trim_ms, lam, fold_idx):
+    """
+    Return a list of dicts, one per held-out trial, containing aligned y and yhat.
+    """
+    w = np.asarray(w)
+    if w.ndim == 1:
+        w = w[:, None]
+
+    preds = []
+    for eeg, pupil, meta in test_trials:
+        out = align_one_trial(eeg, pupil, shift, trim_ms)
+        if out is None:
+            continue
+        X, y, info = out
+        yhat = X @ w
+
+        yv  = np.asarray(y).ravel()
+        yh  = np.asarray(yhat).ravel()
+        mse = float(np.mean((yh - yv) ** 2))
+
+        if yv.std(ddof=0) == 0 or yh.std(ddof=0) == 0:
+            r = np.nan
+        else:
+            r = float(pearsonr(yh, yv)[0])
+
+        preds.append({
+            "lam": float(lam),
+            "fold": int(fold_idx),
+            "shift": int(shift),
+            "meta": meta,          # contains epoch/load/condition etc
+            "align": info,         # start/stop/shift/len_aligned
+            "y": yv,               # aligned y_true
+            "yhat": yh,            # aligned y_pred
+            "r_trial": r,
+            "mse_trial": mse,
+        })
+    return preds
+
+
+#### TO MATCH EELBRAIN PARTITIONS AND NESTED CV #########
 
 def eelbrain_partitions_indices(n_cases: int, k: int):
     """Round-robin partitions: part i contains indices i, i+k, i+2k, ..."""
