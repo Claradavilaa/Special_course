@@ -514,11 +514,11 @@ def ridge_wx(X: np.ndarray, y: np.ndarray, lam: float, eps: float = 1e-12, norma
     * optional L2 normalisation if normalise=True (default False).
     """
     # centre like np.cov does
-    Xc = X - X.mean(axis=0, keepdims=True)
-    yc = y - y.mean()
-    n  = Xc.shape[0]
-    Sxx = (Xc.T @ Xc) / max(n - 1, 1)      # ddof=1 covariance
-    Sxy = (Xc.T @ yc) / max(n - 1, 1)
+    X -= X.mean(axis=0, keepdims=True)
+    y -= y.mean()
+    n  = X.shape[0]
+    Sxx = (X.T @ X) / max(n - 1, 1)      # ddof=1 covariance
+    Sxy = (X.T @ y) / max(n - 1, 1)
 
     A = Sxx + lam * np.eye(Sxx.shape[0])
     w = np.linalg.solve(A, Sxy)
@@ -567,6 +567,8 @@ def fit_at_shift_lambda(trials: List[dict], shift_samples: int, lam: float, trim
     train_mse = mse_with_weights(X_tr, y_tr, w_ridge)
 
     r_train = corr_with_weights(X_tr, y_tr, w_ridge)
+    del X_tr, y_tr
+    import gc; gc.collect()
     return w_ridge, train_mse, r_train
 
 def evaluate_on_trials(trials: List[dict], shift_samples: int, w: np.ndarray, trim_ms: int) -> float:
@@ -683,8 +685,6 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
         if np.isfinite(rs_all) and rs_all > best_rs_all:
             best_mse_all, best_shift_all, best_rs_all, best_w_all = mse_all, int(s), rs_all, w_s
 
-    
-
     final_fit = {
         "lambda": best["lam"],
         "best_shift": best_shift_all,
@@ -705,7 +705,7 @@ def cross_validate_lambda(lambdas: List[float], folds: List[dict], trials_memory
 
     lam_star_key = f"{float(lam_star):.12g}"
     final_fit["cv_trial_predictions"] = preds_by_lam.get(lam_star_key, [])
-    
+
     return final_fit, ordered_results
 
 def fit_best_shift_on_train(train_trials, lam, shifts, trim_ms, normalise_w=False):

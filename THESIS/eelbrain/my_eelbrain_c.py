@@ -237,8 +237,8 @@ for subj in SUBJECTS:
     # -----------------------------------------------------------------
     # Run encoder (ppd → EEG) and decoder (EEG → ppd)
     # -----------------------------------------------------------------
-    print("  Fitting encoder (ppd → EEG)...")
     if not DECODING_ONLY:
+        print("  Fitting encoder (ppd → EEG)...")
         enc = boosting(
             y='eeg',
             x='ppd',
